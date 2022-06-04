@@ -65,9 +65,15 @@ impl Transport {
     ) -> Result<http::Response<Body>> {
         // The ACME API may at any point invalidate all nonces. If we detect such an
         // error, we loop until the server accepts the nonce.
+        let mut next_nonce: Option<String> = None;
         loop {
-            // Either get a new nonce, or reuse one from a previous request.
-            let nonce = self.nonce_pool.get_nonce()?;
+            let nonce = if let Some(nonce) = next_nonce.take() {
+                // Use nonce from previous request
+                nonce
+            } else {
+                // Contact pool which will either get a new nonce, or reuse one from prev request
+                self.nonce_pool.get_nonce()?
+            };
 
             // Sign the body.
             let body = make_body(url, nonce, &self.acme_key, body)?;
@@ -79,7 +85,7 @@ impl Transport {
 
             // Regardless of the request being a success or not, there might be
             // a nonce in the response.
-            self.nonce_pool.extract_nonce(&response);
+            let mut nonce = extract_nonce(&response).map(|x| x.to_owned());
 
             // Turn errors into ApiProblem.
             let result = req_handle_error(response);
@@ -88,8 +94,16 @@ impl Transport {
                 if problem.is_bad_nonce() {
                     // retry the request with a new nonce.
                     debug!("Retrying on bad nonce");
+                    // We MUST use the nonce from the previous request so skip the pool entirely
+                    next_nonce = nonce.take().map(|x| x.to_owned());
                     continue;
                 }
+            }
+            // Add nonce from the response to the pool
+            if let Some(nonce) = nonce {
+                self.nonce_pool.add_nonce(nonce.to_string());
+            }
+            if let Err(problem) = &result {
                 // it seems we sometimes make bad JWTs. Why?!
                 if problem.is_jwt_verification_error() {
                     debug!("Retrying on: {}", problem);
@@ -100,6 +114,17 @@ impl Transport {
             return Ok(result?);
         }
     }
+}
+
+fn extract_nonce(res: &std::result::Result<http::Response<Body>, ureq::Error>) -> Option<&str> {
+    let res = match res {
+        Ok(res) => res,
+        _ => return None
+    };
+
+    res.headers()
+        .get("replay-nonce")
+        .and_then(|v| v.to_str().ok())
 }
 
 /// Shared pool of nonces.
@@ -117,23 +142,11 @@ impl NoncePool {
         }
     }
 
-    fn extract_nonce(&self, res: &std::result::Result<http::Response<Body>, ureq::Error>) {
-        let res = match res {
-            Ok(res) => res,
-            _ => return,
-        };
-
-        if let Some(nonce) = res.headers().get("replay-nonce") {
-            trace!("Extract nonce");
-            let mut pool = self.pool.lock().unwrap();
-            let nonce = match nonce.to_str() {
-                Ok(v) => v,
-                _ => return,
-            };
-            pool.push_back(nonce.to_string());
-            if pool.len() > 10 {
-                pool.pop_front();
-            }
+    fn add_nonce(&self, nonce: String) {
+        let mut pool = self.pool.lock().unwrap();
+        pool.push_back(nonce);
+        if pool.len() > 10 {
+            pool.pop_front();
         }
     }
 

@@ -9,6 +9,7 @@ authors = ["Martin Algesten <martin@algesten.se>"]
 keywords = ["letsencrypt", "acme"]
 categories = ["web-programming", "api-bindings"]
 edition = "2018"
+publish = false
 
 [dependencies]
 base64 = "0.22"

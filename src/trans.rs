@@ -90,13 +90,13 @@ impl Transport {
                     // retry the request with a new nonce.
                     debug!("Retrying on bad nonce");
                     // We MUST use the nonce from the previous request so skip the pool entirely
-                    next_nonce = nonce.take().map(|x| x.to_owned());
+                    next_nonce = nonce.take();
                     continue;
                 }
             }
             // Add nonce from the response to the pool
             if let Some(nonce) = nonce {
-                self.nonce_pool.add_nonce(nonce.to_string());
+                self.nonce_pool.add_nonce(nonce);
             }
             if let Err(problem) = &result {
                 // it seems we sometimes make bad JWTs. Why?!
@@ -111,14 +111,14 @@ impl Transport {
     }
 }
 
-fn extract_nonce(res: &std::result::Result<ureq::Response, ureq::Error>) -> Option<&str> {
+fn extract_nonce(res: &std::result::Result<ureq::Response, ureq::Error>) -> Option<String> {
     let res = match res {
         Ok(res) => res,
         Err(ureq::Error::Status(_, res)) => res,
         Err(ureq::Error::Transport(_)) => return None,
     };
 
-    res.header("replay-nonce")
+    res.header("replay-nonce").map(|x| x.to_owned())
 }
 
 /// Shared pool of nonces.
